@@ -96,6 +96,9 @@ class StockDataClient:
         
         # EastMoney API
         url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
         params = {
             "secid": secid,
             "fields1": "f1,f2,f3,f4,f5,f6",
@@ -107,7 +110,7 @@ class StockDataClient:
         }
         
         try:
-            res = requests.get(url, params=params, timeout=5)
+            res = requests.get(url, headers=headers, params=params, timeout=5)
             data = res.json()
             
             if not data or 'data' not in data or not data['data'] or 'klines' not in data['data']:
