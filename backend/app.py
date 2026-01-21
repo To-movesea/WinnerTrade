@@ -12,11 +12,93 @@ from stock_api import StockDataClient
 app = Flask(__name__)
 CORS(app)
 
-# Scheduler
-scheduler = BackgroundScheduler()
+# Scheduler - disabled for Vercel/Serverless environments
+# Check if running in a serverless environment (e.g. VERCEL env var)
+is_serverless = os.environ.get('VERCEL') or os.environ.get('AWS_LAMBDA_FUNCTION_NAME')
 
-def daily_analysis_task():
-    print(f"[{datetime.now()}] Starting daily portfolio analysis...")
+if not is_serverless:
+    scheduler = BackgroundScheduler()
+
+    def daily_analysis_task():
+        print(f"[{datetime.now()}] Starting daily portfolio analysis...")
+        portfolio = StockService.get_portfolio()
+        if not portfolio:
+            print("No stocks in portfolio.")
+            return
+
+        supabase = get_supabase_client()
+        
+        # Get active rules
+        try:
+            response = supabase.table('experience_rules').select('*').eq('is_active', True).execute()
+            rules = response.data
+        except Exception as e:
+            print(f"Error fetching rules: {e}")
+            rules = []
+        
+        results = []
+        for stock in portfolio:
+            analysis = StockService.analyze_stock(stock['code'])
+            analysis['stock_name'] = stock['name']
+            
+            # Match rules (Mock matching logic)
+            matched = []
+            for rule in rules:
+                # Simple keyword matching for demo purposes
+                if "尾盘" in rule['rule_content'] and datetime.now().hour >= 14:
+                    matched.append(rule['rule_content'])
+                if "成交量" in rule['rule_content'] and "放量" in analysis['volume_status']:
+                    matched.append(rule['rule_content'])
+                if "买入" in rule['rule_content'] and analysis['score'] > 80:
+                    matched.append(rule['rule_content'])
+                    
+            matched_str = "|".join(matched)
+            
+            # Save to DB
+            try:
+                data = {
+                    'stock_code': analysis['stock_code'],
+                    'stock_name': analysis['stock_name'],
+                    'pressure_level': analysis['pressure_level'],
+                    'support_level': analysis['support_level'],
+                    'score': analysis['score'],
+                    'recommendation': analysis['recommendation'],
+                    'volume_status': analysis['volume_status'],
+                    'sector_flow': analysis['sector_flow'],
+                    'analysis_time': analysis['analysis_time'],
+                    'matched_rules': matched_str,
+                    # Note: analysis_results table might not have current_price column yet
+                    # We can choose to alter table or just return it in API response
+                }
+                # Remove keys that might not be in DB yet if schema is strict, or add migration
+                # For now, let's assume we just want to DISPLAY it, so we don't save it to historical analysis table unless we migrate
+                # But the API /api/portfolio/analysis returns what's in DB.
+                # So if we want to show it, we must either:
+                # 1. Save it to DB (Requires Migration)
+                # 2. Or fetch it in real-time when calling the API (Better for "Current Price")
+                
+                supabase.table('analysis_results').insert(data).execute()
+            except Exception as e:
+                print(f"Error saving analysis for {stock['code']}: {e}")
+                
+            results.append(analysis)
+            
+        print(f"[{datetime.now()}] Daily analysis completed.")
+
+    # Schedule task daily at 15:00 (or every minute for demo)
+    scheduler.add_job(daily_analysis_task, 'cron', hour=15, minute=0)
+    # For demo/testing, run every 5 minutes
+    scheduler.add_job(daily_analysis_task, 'interval', minutes=5)
+    scheduler.start()
+else:
+    # Define daily_analysis_task for manual triggering even without scheduler
+    def daily_analysis_task():
+        # ... copy of logic or refactor to shared function ...
+        # For brevity, let's refactor the logic into a standalone function outside
+        return perform_analysis()
+
+def perform_analysis():
+    print(f"[{datetime.now()}] Starting analysis task...")
     portfolio = StockService.get_portfolio()
     if not portfolio:
         print("No stocks in portfolio.")
@@ -62,30 +144,19 @@ def daily_analysis_task():
                 'volume_status': analysis['volume_status'],
                 'sector_flow': analysis['sector_flow'],
                 'analysis_time': analysis['analysis_time'],
-                'matched_rules': matched_str,
-                # Note: analysis_results table might not have current_price column yet
-                # We can choose to alter table or just return it in API response
+                'matched_rules': matched_str
             }
-            # Remove keys that might not be in DB yet if schema is strict, or add migration
-            # For now, let's assume we just want to DISPLAY it, so we don't save it to historical analysis table unless we migrate
-            # But the API /api/portfolio/analysis returns what's in DB.
-            # So if we want to show it, we must either:
-            # 1. Save it to DB (Requires Migration)
-            # 2. Or fetch it in real-time when calling the API (Better for "Current Price")
-            
             supabase.table('analysis_results').insert(data).execute()
         except Exception as e:
             print(f"Error saving analysis for {stock['code']}: {e}")
             
         results.append(analysis)
-        
-    print(f"[{datetime.now()}] Daily analysis completed.")
+    return results
 
-# Schedule task daily at 15:00 (or every minute for demo)
-scheduler.add_job(daily_analysis_task, 'cron', hour=15, minute=0)
-# For demo/testing, run every 5 minutes
-scheduler.add_job(daily_analysis_task, 'interval', minutes=5)
-scheduler.start()
+if not is_serverless:
+    # Overwrite the dummy function with the real one using perform_analysis
+    def daily_analysis_task():
+        perform_analysis()
 
 # API Routes
 
@@ -361,7 +432,12 @@ def system_status():
             "total_rules": total_rules
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # Propagate error to frontend with 500 status code
+        return jsonify({"error": str(e), "details": "Database connection failed"}), 500
+
+# Import and register debug route
+from debug_route import debug_status
+app.add_url_rule('/api/debug', 'debug_status', debug_status, methods=['GET'])
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
